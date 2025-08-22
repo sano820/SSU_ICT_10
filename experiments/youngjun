@@ -1,0 +1,173 @@
+import mysql.connector
+import requests
+import xml.etree.ElementTree as ET
+import json
+import re
+
+# ==========================
+#  🔑 Worknet API KEY 직접 입력
+# ==========================
+WORKNET_API_KEY = "d021e94c-74ff-4fcf-8ed5-576898fdd9a2"   # ← 직접 키 입력
+
+# ==========================
+#  문자열 정규화 (기업명 비교용)
+# ==========================
+def _normalize(s: str) -> str:
+    """기업명/별칭을 단순화하여 비교 가능하게 정규화"""
+    if not s:
+        return ""
+    s = re.sub(r"\(주\)", "", s)         # '(주)' 제거
+    s = re.sub(r"[\s·•\-_/]", "", s)     # 공백 및 특수구분자 제거
+    s = re.sub(r"[^\w가-힣]", "", s)     # 한글/영문/숫자 외 제거
+    return s.lower()
+
+# ==========================
+#  관심 기업 세트 구축
+# ==========================
+def build_interest_set(companies, aliases):
+    """DB에서 가져온 기업명 + 별칭을 정규화하여 Set으로 만듦"""
+    norm_set = set()
+    for c in companies:
+        norm_set.add(_normalize(c))
+    for a in aliases:
+        if a:
+            norm_set.add(_normalize(a))
+    return norm_set
+
+# ==========================
+#  관심 기업 매칭 함수
+# ==========================
+def is_interest_company(company_name: str, interest_norm_set) -> bool:
+    """채용공고 기업명이 관심기업 리스트에 해당하는지 검사"""
+    n = _normalize(company_name)
+    if not n:
+        return False
+    # ① 정확 일치
+    if n in interest_norm_set:
+        return True
+    # ② 부분 포함 (앞뒤 문자열 포함)
+    for target in interest_norm_set:
+        if target in n or n in target:
+            return True
+    return False
+
+# ==========================
+#  DB 설정 -> 일단 출력 검사위해 개인용 db에 저장
+# ==========================
+db_config = {
+    'host': 'localhost',
+    'user': 'root',    ## DB 사용자 계정 (MySQL 설치 시 만든 계정, 기본은 'root')
+    'password': 'dldudwns01~',  ## 해당 계정의 비밀번호
+    'database': 'mysql' ## 접속할 데이터베이스 이름 (여기서는 'mysql')
+}
+
+# ==========================
+#  DB에서 관심 기업 불러오기
+# ==========================
+def fetch_companies_from_db():
+    print("\n🔍 DB에서 관심 기업 불러오기")
+    companies, aliases = [], []
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, alias FROM companies")
+        rows = cursor.fetchall()
+
+        companies = [row[0] for row in rows if row[0]]
+        aliases = [row[1] for row in rows if len(row) > 1 and row[1]]
+
+        print(f"✅ DB 기업명 {len(companies)}개, 별칭 {len([a for a in aliases if a])}개 불러옴")
+    except mysql.connector.Error as err:
+        print(f"❌ DB 오류: {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+    return companies, aliases
+
+# ==========================
+#  API 호출 및 관심기업 필터링
+# ==========================
+def fetch_and_filter_jobs(companies, aliases):
+    if not companies:
+        print("❌ 관심 기업이 없습니다.")
+        return []
+
+    url = "https://www.work24.go.kr/cm/openApi/call/wk/callOpenApiSvcInfo210L21.do"
+    all_raw_jobs = []
+    interest_norm_set = build_interest_set(companies, aliases)
+
+    print("\n📦 API 채용공고 수집 시작\n")
+
+    # 페이지 루프 (최대 10페이지만 예시로 설정)
+    for page in range(1, 11):
+        params = {
+            "authKey": WORKNET_API_KEY,   
+            "callTp": "L",
+            "returnType": "XML",
+            "startPage": str(page),
+            "display": "100"
+        }
+
+        try:
+            response = requests.get(url, params=params)
+            if response.status_code != 200:
+                print(f"❌ API 요청 실패 (페이지 {page})")
+                break
+
+            root = ET.fromstring(response.content)
+
+            for job_item in root.findall(".//dhsOpenEmpInfo"):
+                company_name = job_item.findtext("empBusiNm") or ""
+
+                # 관심기업만 필터링
+                if not is_interest_company(company_name, interest_norm_set):
+                    continue
+                
+                print(f"🎯 매칭된 기업: {company_name}")  # 로그 출력 확인용
+
+                job_data = {  ## 워크넷 출력예시에 있는  파라미터들
+                    "company_name": company_name,
+                    "job_title": job_item.findtext("empWantedTitle"),
+                    "employment_type": job_item.findtext("empWantedTypeNm"),
+                    "start_date": job_item.findtext("empWantedStdt"),
+                    "end_date": job_item.findtext("empWantedEndt"),
+                    "company_type": job_item.findtext("coClcdNm"),
+                    "company_logo": job_item.findtext("regLogImgNm"),
+                    "apply_link": job_item.findtext("empWantedHomepgDetail"),
+                }
+                all_raw_jobs.append(job_data)
+
+        except Exception as e:
+            print(f"❌ API 오류 (페이지 {page}): {e}")
+            continue
+
+    print(f"\n📊 관심기업 공고 수집 결과: {len(all_raw_jobs)}건")
+    return all_raw_jobs
+
+# ==========================
+#  JSON 저장
+# ==========================
+def save_jobs_to_json(data, filename="raw_job_data.json"):
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"✅ '{filename}' 저장 완료")
+    except Exception as e:
+        print(f"❌ JSON 저장 오류: {e}")
+
+# ==========================
+#  메인 실행
+# ==========================
+def main():
+    companies, aliases = fetch_companies_from_db()
+    raw_jobs = fetch_and_filter_jobs(companies, aliases)
+
+    if raw_jobs:
+        save_jobs_to_json(raw_jobs)
+        print("\n🎉 채용공고 수집 완료")
+    else:
+        print("\n💡 관심 기업 공고 없음")
+
+if __name__ == "__main__":
+    main()
