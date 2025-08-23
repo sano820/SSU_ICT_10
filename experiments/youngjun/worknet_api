@@ -3,11 +3,14 @@ import requests
 import xml.etree.ElementTree as ET
 import json
 import re
+from dotenv import load_dotenv
 
 # ==========================
 #  🔑 Worknet API KEY 직접 입력
 # ==========================
-WORKNET_API_KEY = "d021e94c-74ff-4fcf-8ed5-576898fdd9a2"   # ← 직접 키 입력
+
+# WORKNET_API_KEY = "WORKNET_API_KEY"   # ← 직접 키 입력
+load_dotenv()
 
 # ==========================
 #  문자열 정규화 (기업명 비교용)
