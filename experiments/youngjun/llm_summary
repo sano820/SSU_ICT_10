@@ -4,10 +4,13 @@ import json
 import os
 import re
 import google.generativeai as genai
+from dotenv import load_dotenv
 
 # 일단 빠른 구현 위해 키 직접 입력
 # 경고: 보안에 취약하므로, 실제 배포 시에는 환경 변수를 사용하는 등의 방법 고려
-GEMINI_API_KEY = "AIzaSyCULKR3OG6HzId_CSr7Y8TCvQyanIliJFo"
+
+# GEMINI_API_KEY = "GEMINI_API_KEY"
+load_dotenv()
 
 try:
     genai.configure(api_key=GEMINI_API_KEY)
