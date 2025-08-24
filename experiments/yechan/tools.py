@@ -9,6 +9,17 @@ Original file is located at
 
 # !pip install langchain-community
 import os
+import requests
+from datetime import datetime, timedelta
+from googleapiclient.discovery import build
+from youtube_transcript_api import YouTubeTranscriptApi
+from typing import List, Dict, Any
+import glob
+
+import os # os import 추가
+from langchain_core.tools import tool
+from googleapiclient.discovery import build
+
 from langchain.tools import tool
 from langchain_community.tools.youtube.search import YouTubeSearchTool
 from langchain_community.tools.tavily_search import TavilySearchResults
@@ -19,6 +30,121 @@ from langchain_community.document_loaders import ArxivLoader
 from langchain_community.retrievers import TavilySearchAPIRetriever
 
 """유튜브 데이터 크롤링"""
+def analyze_youtube_topic(
+    topic: str,
+    analysis_prompt: str,
+    api_key: str,
+    lang_code: str = "ko",
+    max_results: int = 5,
+    num_to_analyze: int = 2,
+    transcripts_only: bool = True  # <-- [수정] 자막 필터링 여부를 인자로 받도록 추가
+) -> str:
+    """
+    주어진 주제(topic)로 유튜브 영상을 검색하고, 주어진 프롬프트(analysis_prompt)로 내용을 분석하여 요약합니다.
+    """
+    print(f"\n-> 유튜브 '{topic}' 주제 분석 시작...")
+    try:
+        # [수정] 💡 인자로 받은 transcripts_only 값을 사용합니다.
+        videos = find_videos_with_transcripts.invoke({
+            "topic": topic,
+            "api_key": api_key,
+            "lang_code": lang_code,
+            "transcripts_only": transcripts_only, # <-- 수정된 부분
+            "max_results": max_results
+        })
+
+        # --- 이하 함수의 나머지 부분은 모두 동일합니다 ---
+        if not videos:
+            print(f"-> 분석할 '{topic}' 관련 영상이 없습니다.")
+            return f"관련 유튜브 영상 없음."
+            
+        videos_to_analyze = videos[:num_to_analyze]
+        print(f"-> 총 {len(videos)}개의 영상을 찾았으며, 상위 {len(videos_to_analyze)}개를 분석합니다:")
+        for video in videos_to_analyze:
+            print(f"  - {video.get('title', '제목 없음')}")
+
+        analysis_tasks = [
+            {
+                "video_url": video['url'],
+                "question": analysis_prompt
+            }
+            for video in videos_to_analyze
+        ]
+        
+        analysis_results = analyze_video_content.batch(analysis_tasks)
+        
+        return "\n\n---\n\n".join(analysis_results)
+
+    except Exception as e:
+        print(f"-> ⚠️ 유튜브 '{topic}' 분석 중 오류: {e}")
+        return f"유튜브 '{topic}' 분석 중 오류 발생."
+
+@tool
+def find_videos_with_transcripts(
+    topic: str,
+    api_key: str,
+    max_results: int = 10,
+    lang_code: str = 'en',
+    transcripts_only: bool = True
+) -> List[Dict[str, Any]]:
+    """
+    주어진 주제로 유튜브를 검색하여 영상의 상세 정보 리스트를 반환합니다.
+    """
+    print(f"-> '{topic}' 주제로 영상 검색 시작 (자막 필터링: {transcripts_only}, 언어: {lang_code})")
+    
+    try:
+        if not api_key:
+            raise ValueError("API 키가 전달되지 않았습니다.")
+        youtube_service = build('youtube', 'v3', developerKey=api_key)
+    except Exception as e:
+        print(f"-> ⚠️ YouTube API 서비스 생성 실패. API 키를 확인하세요. (오류: {e})")
+        return []
+
+    try:
+        search_response = youtube_service.search().list(
+            q=topic,
+            part='snippet',
+            type='video',
+            order='relevance',
+            maxResults=max_results
+        ).execute()
+        
+        video_ids = [item['id']['videoId'] for item in search_response.get('items', [])]
+        if not video_ids:
+            return []
+
+        video_details_response = youtube_service.videos().list(
+            part='snippet,statistics',
+            id=','.join(video_ids)
+        ).execute()
+        
+        all_video_details = []
+        for item in video_details_response.get('items', []):
+            all_video_details.append({
+                "title": item['snippet']['title'],
+                "url": f"https://www.youtube.com/watch?v={item['id']}",
+                "view_count": int(item['statistics'].get('viewCount', 0)),
+                "video_id": item['id']
+            })
+            
+        if not transcripts_only:
+            return all_video_details
+
+        final_videos = []
+        for video in all_video_details:
+            try:
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video['video_id'])
+                transcript_list.find_transcript([lang_code])
+                final_videos.append(video)
+            except Exception:
+                continue
+                
+        return final_videos
+
+    except Exception as e:
+        print(f"-> 유튜브 상세 정보 검색 중 오류 발생: {e}")
+        return []
+
 
 @tool
 def find_youtube_videos(topic: str, language: str, time_filter: str = "3 years") -> str:
