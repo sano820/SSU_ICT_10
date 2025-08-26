@@ -5,6 +5,7 @@ from googleapiclient.discovery import build
 from youtube_transcript_api import YouTubeTranscriptApi
 from typing import List, Dict, Any
 import glob
+import config
 
 import os # os import 추가
 from langchain_core.tools import tool
@@ -18,6 +19,7 @@ from langchain_community.document_loaders.parsers import OpenAIWhisperParser
 from langchain_community.document_loaders.blob_loaders.youtube_audio import YoutubeAudioLoader
 from langchain_community.document_loaders import ArxivLoader
 from langchain_community.retrievers import TavilySearchAPIRetriever
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 """유튜브 데이터 크롤링"""
 def analyze_youtube_topic(
@@ -178,7 +180,9 @@ def analyze_video_content(video_url: str, question: str) -> str:
         transcript_text = docs[0].page_content
 
         # 3. 변환된 텍스트를 기반으로 질문에 답변합니다.
-        llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", 
+                             temperature=0,
+                             google_api_key=config.GEMINI_API_KEY)
         prompt = f"""
         아래는 YouTube 영상의 전체 음성 내용을 텍스트로 변환한 것입니다.
         이 내용을 바탕으로 다음 질문에 대해 상세하게 답변해주세요.

@@ -1,5 +1,3 @@
-# filename: llm_summary_agent.py
-
 import json
 import os
 import re
