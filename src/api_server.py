@@ -5,7 +5,7 @@ from database import init_db, get_db, User, CompanyInterest, AnalysisReport
 from orchestrator import run_daily_job_recommendation, run_analysis_report_task
 
 # FastAPI 앱 생성
-app = FastAPI(title="채용 모니터링 챗봇 API", version="1.0")
+app = FastAPI(title="채용 모니터링 API", version="1.0")
 
 @app.on_event("startup")
 def on_startup():

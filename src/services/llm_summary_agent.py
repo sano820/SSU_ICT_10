@@ -6,8 +6,14 @@ import re
 import google.generativeai as genai
 from dotenv import load_dotenv
 
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+import config
+
 try:
-    genai.configure(api_key=GEMINI_API_KEY)
+    genai.configure(api_key=config.GEMINI_API_KEY)
     print("✅ Gemini API가 성공적으로 설정되었습니다.")   # api 설정됐는지 확인
 except Exception as e:
     print(f"❌ Gemini API 설정 실패: {e}")
@@ -126,18 +132,53 @@ def render_chat_with_gemini(structured: list[dict]) -> str | None:
 
 
 
+SYSTEM_PROMPT_TEMPLATE = """
+너는 채용 공고를 **한국어 챗봇 대화체**로만 요약한다.
+
+[출력 형식 (각 공고당 6줄)]
+1) 🔔 알림: 관심기업 {회사명}에서 새로운 채용 공고가 등록되었어요!
+2) 🤖 에이전트: 모집 직무는 ‘{직무명(한국어로 표현)}’ 입니다.
+3) 🏷️ 직무 분야: {IT, 반도체, 금융, 제조, 게임, 연구개발, IT/보안, 마케팅 등으로 간단 요약}
+4) • 고용형태: {고용형태 또는 '-'}
+5) • 채용일자: {YYYY-MM-DD ~ YYYY-MM-DD 또는 '-' }
+6) 🧷 지원 링크: {URL}
+
+[규칙]
+- 절대 다른 설명/머리말/꼬리말 금지. 반드시 위 6줄 형식만 출력.
+- JSON 키 이름(company_name 등) 같은 변수명은 절대 출력하지 말 것.
+- 직무명은 영어라도 자연스럽게 한국어로 번역해 표현할 것.
+- 직무 분야는 회사 업종과 직무명을 함께 보고 가장 적절한 한두 단어로만 요약.
+- 공고 블록 사이에는 빈 줄 1줄만 둘 것.
+
+---
+아래 JSON 데이터를 위 형식으로만 요약하라:
+{job_data_json}
+"""
+
 def generate_chat_summary(job_data: list) -> str | None:
     """수집된 채용 공고 데이터로 챗봇 메시지를 생성합니다."""
     if not job_data:
         print("💡 요약할 채용 공고 데이터가 없습니다.")
         return None
     
-    structured_jobs = build_structured_summaries(job_data)
-    chat_summary_text = render_chat_with_gemini(structured_jobs)
+    # 1. LLM 초기화
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest",
+                                 temperature=0,
+                                 google_api_key=config.GEMINI_API_KEY)
     
-    if chat_summary_text:
-        print(f"✅ 대화체 요약 생성 완료.")
-    else:
-        print("❌ LLM 호출 실패로 인해 대화체 요약을 생성하지 못했습니다.")
-        
-    return chat_summary_text
+    # 2. LangChain 체인 구성
+    prompt = ChatPromptTemplate.from_template(SYSTEM_PROMPT_TEMPLATE)
+    chain = prompt | llm | StrOutputParser()
+
+    # 3. 데이터 준비 및 체인 실행
+    structured_jobs = build_structured_summaries(job_data)
+    job_data_json_str = json.dumps(structured_jobs, ensure_ascii=False, indent=2)
+
+    try:
+        chat_summary_text = chain.invoke({"job_data_json": job_data_json_str})
+        print("✅ 대화체 요약 생성 완료.")
+        return chat_summary_text.strip()
+    except Exception as e:
+        print(f"❌ LLM 호출 실패로 인해 대화체 요약을 생성하지 못했습니다: {e}")
+        return None
+    
