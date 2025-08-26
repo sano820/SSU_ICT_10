@@ -1,13 +1,30 @@
+#config
+dotenv
+
+# FastAPI & Server
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy
+
+# Configuration
+python-dotenv
+
+# LLM & LangChain
 openai
 langchain
-langchain-core
 langchain-openai
 langchain-community
 langgraph
-python-dotenv
+google-generativeai
+
+# External APIs & Tools
 requests
-pytube
+google-api-python-client
+youtube-transcript-api
 tavily-python
-youtube-search
 arxiv
 pymupdf
+pytube
+mysql-connector-python
