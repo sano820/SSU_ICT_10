@@ -1,0 +1,110 @@
+import mysql.connector
+import json
+from datetime import datetime
+from dotenv import load_dotenv
+import os
+
+# 🔐 환경 변수 로드
+load_dotenv()
+
+# ==========================
+# DB 설정 (사용자 제공 정보 그대로)
+# ==========================
+db_config = {
+    'host': 'localhost',
+    'user': 'root',
+    'password': 'dldudwns01~',
+    'database': 'mysql'
+}
+
+# ==========================
+# 관심 기업 리스트 SQL에서 가져오기
+# ==========================
+def fetch_interest_companies():
+    interest_companies = []
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT name, alias FROM companies")
+        rows = cursor.fetchall()
+        for row in rows:
+            names = [row['name']]
+            if row['alias']:
+                # 쉼표 기준으로 별칭 분리 후 strip
+                aliases = [a.strip() for a in row['alias'].split(',')]
+                names.extend(aliases)
+            interest_companies.append({
+                "main_name": row['name'],
+                "aliases": names
+            })
+    except mysql.connector.Error as err:
+        print(f"❌ DB 오류 (관심 기업 조회): {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+    return interest_companies
+
+# ==========================
+# 관심 기업 공고 필터링
+# ==========================
+def fetch_interest_jobs():
+    jobs = []
+    interest_companies = fetch_interest_companies()
+    if not interest_companies:
+        print("💡 관심 기업 리스트가 비어있습니다.")
+        return jobs
+
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM jobs")
+        all_jobs = cursor.fetchall()
+
+        for job in all_jobs:
+            job_company = job.get('company_name')
+            if not job_company:
+                continue
+            for company in interest_companies:
+                if job_company in company['aliases']:
+                    jobs.append(job)
+                    break  # 중복 방지
+
+    except mysql.connector.Error as err:
+        print(f"❌ DB 오류 (공고 조회): {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+    return jobs
+
+# ==========================
+# JSON 파일 저장
+# ==========================
+def save_jobs_to_json(jobs, filename="interest_jobs.json"):
+    if not jobs:
+        print("💡 저장할 공고가 없습니다.")
+        return
+
+    # datetime 직렬화 처리
+    def json_serializer(obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return str(obj)
+
+    try:
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(jobs, f, ensure_ascii=False, indent=4, default=json_serializer)
+        print(f"✅ 관심 기업 공고 JSON 저장 완료: {len(jobs)}건 → {filename}")
+    except Exception as e:
+        print(f"❌ JSON 저장 오류: {e}")
+
+# ==========================
+# 메인 실행
+# ==========================
+def main():
+    jobs = fetch_interest_jobs()
+    save_jobs_to_json(jobs)
+
+if __name__ == "__main__":
+    main()
