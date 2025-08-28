@@ -1,0 +1,187 @@
+import mysql.connector
+import requests
+import xml.etree.ElementTree as ET
+import schedule
+import time
+from dotenv import load_dotenv
+import os
+
+# 🔐 환경 변수 로드
+load_dotenv()
+
+# ==========================
+#  🔑 Worknet API KEY
+# ==========================
+WORKNET_API_KEY = "d021e94c-74ff-4fcf-8ed5-576898fdd9a2"
+
+# ==========================
+#  DB 설정 (사용자 제공 정보 그대로)
+# ==========================
+db_config = {
+    'host': 'localhost',
+    'user': 'root', 
+    'password': 'dldudwns01~', 
+    'database': 'mysql'
+}
+
+# ==========================
+#  API 호출 및 전체 공고 수집
+# ==========================
+def fetch_all_jobs():
+    url = "https://www.work24.go.kr/cm/openApi/call/wk/callOpenApiSvcInfo210L21.do" 
+    all_jobs = []
+
+    for page in range(1, 10):  # 페이지 수 필요에 따라 조정 가능
+        params = {
+            "authKey": WORKNET_API_KEY,
+            "callTp": "L",
+            "returnType": "XML",
+            "startPage": str(page),
+            "display": "100"
+        }
+
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+
+            for job_item in root.findall(".//dhsOpenEmpInfo"):
+                # 🔹 job_id가 없으면 회사명+공고명 조합으로 고유값 생성
+                raw_job_id = job_item.findtext("wantedAuthNo")
+                job_id = raw_job_id if raw_job_id else f"NOID_{job_item.findtext('empWantedTitle')}_{job_item.findtext('empBusiNm')}"
+
+                job_data = {
+                    "company_name": job_item.findtext("empBusiNm"),
+                    "job_title": job_item.findtext("empWantedTitle"),
+                    "employment_type": job_item.findtext("empWantedTypeNm"),
+                    "start_date": job_item.findtext("empWantedStdt"),
+                    "end_date": job_item.findtext("empWantedEndt"),
+                    "company_type": job_item.findtext("coClcdNm"),
+                    "company_logo": job_item.findtext("regLogImgNm"),
+                    "apply_link": job_item.findtext("empWantedHomepgDetail"),
+                    "job_id": job_id
+                }
+                all_jobs.append(job_data)
+
+        except Exception as e:
+            print(f"❌ API 오류 (페이지 {page}): {e}")
+            continue
+
+    print(f"\n📊 전체 공고 수집 완료: {len(all_jobs)}건")
+    return all_jobs
+
+# ==========================
+# DB에 신규 공고만 저장 + 업데이트
+# ==========================
+def upsert_jobs_to_db(jobs):
+    if not jobs:
+        print("💡 수집된 공고가 없습니다.")
+        return
+
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        job_tuples = [
+            (
+                job.get('company_name'),
+                job.get('job_title'),
+                job.get('employment_type'),
+                job.get('start_date'),
+                job.get('end_date'),
+                job.get('company_type'),
+                job.get('company_logo'),
+                job.get('apply_link'),
+                job.get('job_id')
+            ) for job in jobs
+        ]
+
+        # 🔹 ON DUPLICATE KEY UPDATE 사용 → job_id 중복 시 기존 데이터 업데이트
+        query = """
+            INSERT INTO jobs (
+                company_name, job_title, employment_type, start_date,
+                end_date, company_type, company_logo, apply_link, job_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                company_name = VALUES(company_name),
+                job_title = VALUES(job_title),
+                employment_type = VALUES(employment_type),
+                start_date = VALUES(start_date),
+                end_date = VALUES(end_date),
+                company_type = VALUES(company_type),
+                company_logo = VALUES(company_logo),
+                apply_link = VALUES(apply_link)
+        """
+
+        cursor.executemany(query, job_tuples)
+        conn.commit()
+
+        print(f"✅ {cursor.rowcount}건 신규/업데이트 공고 DB 처리 완료")
+
+    except mysql.connector.Error as err:
+        print(f"❌ DB 저장 오류: {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+# ==========================
+#  jobs 테이블 생성
+# ==========================
+def create_jobs_table():
+    try:
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+        create_table_query = """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                company_name VARCHAR(255),
+                job_title VARCHAR(255),
+                employment_type VARCHAR(255),
+                start_date VARCHAR(255),
+                end_date VARCHAR(255),
+                company_type VARCHAR(255),
+                company_logo VARCHAR(255),
+                apply_link VARCHAR(255),
+                job_id VARCHAR(255) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """
+        cursor.execute(create_table_query)
+        print("✅ 'jobs' 테이블 생성 완료 또는 이미 존재함")
+    except mysql.connector.Error as err:
+        print(f"❌ 테이블 생성 오류: {err}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
+# ==========================
+#  스케줄러 job
+# ==========================
+def job():
+    print("🕒 워크넷 공고 수집 시작...")
+    all_jobs = fetch_all_jobs()
+    upsert_jobs_to_db(all_jobs)
+    print("🟢 수집 완료\n=== 🕒 스케줄러 대기 중 ===")
+
+# ==========================
+#  메인 실행
+# ==========================
+def main():
+    create_jobs_table()
+
+    # 첫 실행
+    job()
+
+    # 스케줄러 10:00, 14:00, 19:00
+    schedule.every().day.at("10:00").do(job)
+    schedule.every().day.at("14:00").do(job)
+    schedule.every().day.at("19:00").do(job)
+
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
